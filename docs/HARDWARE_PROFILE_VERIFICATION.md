@@ -36,7 +36,13 @@ node scripts/verify_hardware_profiles.cjs --schema some-profile.yaml another-pro
 runs Tier 2 automatically on every PR touching `frontend/hardware/**`,
 scoped to only the files that PR actually changed (via `git diff` against
 the PR base) - so pre-existing bugs in unrelated profiles never block an
-unrelated PR. Not merged/enabled upstream yet - see
+unrelated PR. If the PR instead only changes
+`scripts/verify_hardware_profiles.cjs` itself (nothing to scope to), it
+runs against every profile as a smoke test of the script - but
+non-blockingly (`continue-on-error: true`), since that fallback will
+otherwise always surface the pre-existing bugs listed below regardless of
+whether the script change itself is correct. Not merged/enabled upstream
+yet - see
 [koosoli/ESPHomeDesigner#535](https://github.com/koosoli/ESPHomeDesigner/issues/535).
 
 ## Tier 1 - static lint (always runs)
