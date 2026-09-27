@@ -48,36 +48,6 @@
 # Add the matching ESPHome components yourself if your project needs anything else.
 # ============================================================================
 
-substitutions:
-  name: "waveshare_esp32_c6_touch_lcd_169"
-  id: esp32_c6_touch_lcd_169
-  friendly_name: "Waveshare ESP32-C6-Touch-LCD-1.69\""
-  device_description: "Waveshare ESP32-C6 Touch LCD 1.69 inch"
-  project_name: "karl-petter.ESPHomeDesigner_Waveshare_Touch_LCD_1_69"
-  project_version: "1.0.0"
-  # GPIO pins for the LCD screen (SPI)
-  sckpin:  GPIO1
-  mosipin: GPIO2
-  dcpin:   GPIO3
-  rstpin:  GPIO4
-  cspin:   GPIO5
-  blpin:   GPIO6
-  # GPIO pins for i2c (touch / RTC / IMU)
-  sdapin:  GPIO8
-  sclpin:  GPIO7
-  # GPIO pin for the CST816T touch interrupt
-  tpintpin: GPIO11
-  # GPIO pins for the ES8311 audio codec (I2S, shared with speaker + mic)
-  i2smclkpin: GPIO19
-  i2sbclkpin: GPIO20
-  i2slrclkpin: GPIO22
-  i2sdoutpin: GPIO23
-  i2sdinpin: GPIO21
-  # GPIO pins for the BOOT and PWR buttons (active low)
-  bootbtnpin: GPIO9
-  pwrbtnpin: GPIO18
-  logger: "DEBUG"
-
 esp32:
   board: esp32-c6-devkitc-1
   variant: esp32c6
@@ -95,20 +65,13 @@ esp32:
       CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE: y
       CONFIG_HEAP_POISONING_DISABLED: y
 
-esphome:
-  friendly_name: $friendly_name
-  name: $name
-  project:
-    name: "${project_name}"
-    version: "${project_version}"
-
 spi:
-  mosi_pin: $mosipin
-  clk_pin: $sckpin
+  mosi_pin: 2
+  clk_pin: 1
 
 i2c:
-  sda: $sdapin
-  scl: $sclpin
+  sda: 8
+  scl: 7
 
 # skip_probe: the boot-time chip-ID read races the chip and fails on this
 # board, even though the chip answers fine once running (confirmed via I2C
@@ -116,7 +79,7 @@ i2c:
 touchscreen:
   platform: cst816
   id: my_touchscreen
-  interrupt_pin: $tpintpin
+  interrupt_pin: 11
   skip_probe: true
 
 binary_sensor:
@@ -124,7 +87,7 @@ binary_sensor:
     id: boot_button
     name: "Boot Button"
     pin:
-      number: $bootbtnpin
+      number: 9
       mode: INPUT_PULLUP
       inverted: true
       ignore_strapping_warning: true
@@ -132,7 +95,7 @@ binary_sensor:
     id: power_button
     name: "Power Button"
     pin:
-      number: $pwrbtnpin
+      number: 18
       mode: INPUT_PULLUP
       inverted: true
 
@@ -144,9 +107,9 @@ audio_dac:
 
 i2s_audio:
   - id: i2s_bus
-    i2s_lrclk_pin: $i2slrclkpin
-    i2s_bclk_pin: $i2sbclkpin
-    i2s_mclk_pin: $i2smclkpin
+    i2s_lrclk_pin: 22
+    i2s_bclk_pin: 20
+    i2s_mclk_pin: 19
 
 # The mixer lets announcements (TTS, chimes) duck in over music without
 # fighting the media stream for the one physical i2s_audio output.
@@ -154,7 +117,7 @@ speaker:
   - platform: i2s_audio
     id: es8311_speaker
     i2s_audio_id: i2s_bus
-    i2s_dout_pin: $i2sdoutpin
+    i2s_dout_pin: 23
     dac_type: external
   - platform: mixer
     id: media_mixer
@@ -167,7 +130,7 @@ microphone:
   - platform: i2s_audio
     id: es8311_mic
     i2s_audio_id: i2s_bus
-    i2s_din_pin: $i2sdinpin
+    i2s_din_pin: 21
     adc_type: external
     channel: left
 
@@ -191,14 +154,14 @@ media_player:
 
 output:
   - platform: ledc
-    pin: $blpin
-    id: lcd_backlight
+    pin: 6
+    id: gpio_backlight_pwm
 
 light:
   - platform: monochromatic
-    output: lcd_backlight
+    output: gpio_backlight_pwm
     name: "Display Backlight"
-    id: back_light
+    id: display_backlight
     restore_mode: RESTORE_AND_ON
 
 # https://esphome.io/components/display/
@@ -212,9 +175,9 @@ display:
   - platform: mipi_spi
     id: my_display
     model: ST7789V
-    cs_pin: $cspin
-    dc_pin: $dcpin
-    reset_pin: $rstpin
+    cs_pin: 5
+    dc_pin: 3
+    reset_pin: 4
     data_rate: 40MHz
     dimensions:
       width: 240
