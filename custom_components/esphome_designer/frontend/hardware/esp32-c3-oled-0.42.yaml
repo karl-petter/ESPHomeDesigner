@@ -8,7 +8,7 @@
 #         - Framework: ESP-IDF
 # Name: ESP32-C3 OLED 0.42"
 # Resolution: 72x40
-# Shape: rectangle
+# Shape: rect
 # ============================================================================
 #
 # BASED ON: https://www.espboards.dev/esp32/esp32-c3-oled-042/
@@ -36,36 +36,15 @@
 #
 # ============================================================================
 
-substitutions:
-  name: "esp32_c3_oled_042"
-  id: esp32_c3_oled_042
-  friendly_name: 'ESP32-C3-OLED-0.42"'
-  device_description: "ESP32-C3 OLED 0.42 inch"
-  project_name: "karl-petter.ESPHomeDesigner_ESP32-C3-OLED-0_42"
-  project_version: "1.0.0"
-  # GPIO pins for i2c
-  sdapin: GPIO5
-  sclpin: GPIO6
-  # LED
-  rgb_led: GPIO8
-  logger: "DEBUG"
-
 esp32:
   board: esp32-c3-devkitm-1
   flash_size: 4MB
   framework:
     type: esp-idf
 
-esphome:
-  friendly_name: $friendly_name
-  name: $name
-  project:
-    name: "${project_name}"
-    version: "${project_version}"
-
 i2c:
-  sda: $sdapin
-  scl: $sclpin
+  sda: 5
+  scl: 6
   id: bus_a
   frequency: 800kHz
 
