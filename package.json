@@ -16,6 +16,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "verify:ha": "node scripts/verify_ha_integration.cjs",
+    "verify:hardware": "node scripts/verify_hardware_profiles.cjs",
+    "verify:hardware:schema": "node scripts/verify_hardware_profiles.cjs --schema",
     "verify:dist": "node scripts/verify_dist_fresh.cjs",
     "verify:pre-push": "node scripts/pre_push_check.cjs",
     "verify:pre-push:skip-hassfest": "node scripts/pre_push_check.cjs --skip-hassfest",

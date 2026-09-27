@@ -119,6 +119,12 @@ We prioritize stability and honesty. We label things as untested until we *know*
 If you use an "untested" profile and it works correctly on your physical device, please report it to us!
 Once verified, the project maintainers will add the device to the **Supported List**, and the "(untested)" badge will be removed in the next update.
 
+**Before opening a PR:** run `npm run verify:hardware:schema` (or
+`node scripts/verify_hardware_profiles.cjs --schema your-file.yaml`) locally.
+See [docs/HARDWARE_PROFILE_VERIFICATION.md](docs/HARDWARE_PROFILE_VERIFICATION.md)
+for what it checks and its known limitations (LVGL-mode profiles need a
+manual pass using the real Designer-generated YAML).
+
 ---
 
 ## 🔍 Troubleshooting
