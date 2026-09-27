@@ -24,12 +24,20 @@ npm run verify:hardware
 # Tier 2: also schema-validate every profile with the real `esphome` CLI
 npm run verify:hardware:schema
 
-# Just one profile
-node scripts/verify_hardware_profiles.cjs --schema some-profile.yaml
+# One or more specific profiles (basenames, or full relative paths - both
+# work; this is what the PR check below passes)
+node scripts/verify_hardware_profiles.cjs --schema some-profile.yaml another-profile.yaml
 ```
 
 `verify:hardware:schema` requires the ESPHome CLI (`pip install esphome`) on
 `PATH`; if it isn't found the script warns and falls back to Tier 1 only.
+
+**Experimental CI gate:** `.github/workflows/hardware-profile-check.yml`
+runs Tier 2 automatically on every PR touching `frontend/hardware/**`,
+scoped to only the files that PR actually changed (via `git diff` against
+the PR base) - so pre-existing bugs in unrelated profiles never block an
+unrelated PR. Not merged/enabled upstream yet - see
+[koosoli/ESPHomeDesigner#535](https://github.com/koosoli/ESPHomeDesigner/issues/535).
 
 ## Tier 1 - static lint (always runs)
 
@@ -75,20 +83,37 @@ For each profile, Tier 2:
    only - no compiler or toolchain download) and reports pass/fail with the
    trimmed ESPHome error output.
 
-### Known limitation: LVGL-mode profiles
+### LVGL-mode profiles: best-effort stub, not the real Designer output
 
 Some profiles' `touchscreen:` blocks call `lvgl.resume`/`lvgl.is_paused`
 etc. (e.g. `sunton-esp32-2432s028R.yaml`, all `guition-esp32-jc*`,
 `seeedstudio-reterminal-d1001.yaml`, the Waveshare 4.3"/7" touch profiles).
 Those actions only exist when the Designer also emits an `lvgl:` component
 bound to the display - but ESPHome rejects a display that has *both*
-`lambda:` and `lvgl:` configured. Reproducing the app's real
-lambda-vs-LVGL rendering-mode selection is out of scope for a static
-per-file script, so Tier 2 reports these as `lvgl-conditional` and skips
-automated validation rather than emitting a false pass or fail. **Before
-merging a change to one of these profiles, generate the real YAML from the
-Designer UI (both rendering modes if the device supports both) and run
-`esphome config` on that output by hand.**
+`lambda:` and `lvgl:` configured, and separately rejects `rotation:`,
+`auto_clear_enabled:`, `show_test_card:`, and `pages:` on a display owned
+by LVGL (straight from ESPHome's own error text).
+
+Rather than skip these profiles entirely, Tier 2 builds a **best-effort
+LVGL stub**: it drops the `__LAMBDA_PLACEHOLDER__` line (no lambda at all -
+LVGL owns rendering), relocates any `rotation:` on the display into a bare
+`lvgl: displays: - <id>` block, and strips `auto_clear_enabled:`/
+`show_test_card:`/`pages:` if present, then validates the result. This is
+**not** the same as the real Designer-generated LVGL YAML - there are no
+real pages/widgets, just ESPHome's own `hello_world` fallback page - so it
+validates that the profile's hardware wiring (pins, components, touch,
+backlight) is schema-correct in LVGL mode, not that any particular sketch
+renders correctly. Results are reported as `pass-lvgl-stub`/`fail-lvgl-stub`
+(shown as `WARN`/`FAIL`, never silently `OK`) with the stripped/relocated
+keys listed, so it's always visible that this wasn't a full validation.
+**Before merging a change to one of these profiles, still generate the
+real YAML from the Designer UI and run `esphome config` on that output by
+hand at least once** - the stub catches wiring/component bugs, not sketch
+or page-layout bugs.
+
+If a profile can't be stubbed at all (no detectable `display:` block/id),
+Tier 2 falls back to the old behavior: reported as `lvgl-conditional`,
+skipped, not silently passed.
 
 ## Tier 3 - full compile (manual, not automated)
 
@@ -112,6 +137,7 @@ Running `npm run verify:hardware:schema` against every profile currently in
 `main` surfaced concrete, pre-existing issues unrelated to any of the
 `feat/add-support-for-*` porting work:
 
+Non-LVGL profiles:
 - `lilygo-tdisplays3.yaml`: `Component not found: i80` - the `i80:` bus key
   is not a valid ESPHome component in 2026.8.1.
 - `m5stack-tab5.yaml`: `display.mipi_dsi` requires an `esp_ldo:` component
@@ -123,5 +149,26 @@ Running `npm run verify:hardware:schema` against every profile currently in
   (`Waveshare.ESP32-Universal-epaper-7.5v2`) fails ESPHome's
   `namespace.name` validation - the extra `.` in `7.5v2` breaks the
   namespace split.
+
+LVGL-mode profiles (surfaced once Tier 2 started actually validating them
+via the stub above, instead of skipping):
+- **Six profiles are missing the now-required `model:` option on
+  `display: platform: mipi_rgb`**: `elecrow-esp32-7inch.yaml`,
+  `guition-esp32-jc8048w550.yaml`, `sunton-esp32-4827s032R.yaml`,
+  `sunton-esp32-8048s050.yaml`, `sunton-esp32-8048s070.yaml`,
+  `waveshare-esp32-s3-touch-lcd-4.3.yaml`. Same root cause across all six -
+  likely a schema requirement added in a newer ESPHome release than these
+  profiles were last verified against.
+- `guition-esp32-s3-4848s040.yaml`: a real YAML structure bug - the
+  touchscreen's `on_release:` block is nested *inside* `transform:`
+  instead of as its sibling (`[on_release] is an invalid option for
+  [transform]`).
+
+9 of the 16 LVGL-mode profiles pass the stub cleanly:
+`guition-esp32-jc4827w543.yaml`, `guition-esp32-jc8048w535.yaml`,
+`guition-esp32-p4-jc4880p443.yaml`, `guition-esp32-p4-jc8012p4a1c.yaml`,
+`seeedstudio-reterminal-d1001.yaml`, `sunton-esp32-2432s028.yaml`,
+`sunton-esp32-2432s028R.yaml`, `viewdisplay-esp32-s3-uedx48480021.yaml`,
+`waveshare-esp32-s3-touch-lcd-7.yaml`.
 
 These are tracked for review, not fixed as part of adding this runbook.

@@ -1,0 +1,60 @@
+name: Hardware Profile Check
+
+# Deterministic gate for hardware-profile PRs: static lint + esphome schema
+# validation (docs/HARDWARE_PROFILE_VERIFICATION.md), scoped to only the
+# files a given PR actually touches - so pre-existing issues in unrelated
+# profiles never block an unrelated PR. Experimental - see issue #535.
+
+on:
+  pull_request:
+    paths:
+      - 'custom_components/esphome_designer/frontend/hardware/**'
+      - 'scripts/verify_hardware_profiles.cjs'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22.x'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install ESPHome
+        run: pip install esphome
+
+      - name: Determine changed hardware profiles
+        id: changed
+        run: |
+          FILES=$(git diff --name-only \
+            "${{ github.event.pull_request.base.sha }}" "${{ github.sha }}" -- \
+            'custom_components/esphome_designer/frontend/hardware/*.yaml' \
+            'custom_components/esphome_designer/frontend/hardware/*.yml' \
+            | tr '\n' ' ')
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          if [ -n "$FILES" ]; then
+            echo "Changed profiles: $FILES"
+          else
+            echo "No individual profile changed (scripts/verify_hardware_profiles.cjs itself changed) - checking all profiles."
+          fi
+
+      - name: Verify changed hardware profiles
+        if: steps.changed.outputs.files != ''
+        run: node scripts/verify_hardware_profiles.cjs --schema ${{ steps.changed.outputs.files }}
+
+      - name: Verify all hardware profiles (script-only change)
+        if: steps.changed.outputs.files == ''
+        run: npm run verify:hardware:schema

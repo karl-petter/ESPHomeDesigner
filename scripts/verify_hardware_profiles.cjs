@@ -154,18 +154,83 @@ function esphomeAvailable() {
     return !result.error && result.status === 0;
 }
 
+// Keys ESPHome's display schema rejects when the same display is also
+// owned by an `lvgl:` component (from the exact ESPHome error text:
+// "Using lambda:, pages:, auto_clear_enabled: true, or show_test_card:
+// true in display config is not compatible with LVGL" - lambda: is
+// handled separately via LAMBDA_PLACEHOLDER removal). `rotation:` is a
+// distinct case: ESPHome doesn't reject it outright, it tells you to move
+// it - "use of 'rotation' in the display config is not compatible with
+// LVGL, please set rotation in the LVGL config instead" - so that one is
+// relocated into the lvgl: stub rather than dropped.
+const LVGL_INCOMPATIBLE_DISPLAY_KEYS = ['auto_clear_enabled', 'show_test_card', 'pages'];
+
+function findDisplayId(content) {
+    const displayBlockMatch = content.match(/^display:\n((?:[ \t].*\n?)*)/m);
+    if (!displayBlockMatch) return null;
+    const idMatch = displayBlockMatch[1].match(/^[ \t]*-?[ \t]*id:[ \t]*([a-zA-Z0-9_]+)/m);
+    return idMatch ? idMatch[1] : null;
+}
+
+/**
+ * Builds a best-effort LVGL-mode recipe for schema validation: strips the
+ * `__LAMBDA_PLACEHOLDER__` line (LVGL owns rendering, no lambda on the
+ * display), relocates `rotation:` into the lvgl: stub, and drops the other
+ * LVGL-incompatible display keys. This is NOT the same as the real
+ * Designer-generated LVGL YAML (no real pages/widgets) - it validates that
+ * the profile's hardware wiring (pins, components, touch) is schema-valid
+ * in LVGL mode, not that any particular sketch renders correctly.
+ */
+function buildLvglStubRecipe(content) {
+    const displayBlockMatch = content.match(/^display:\n((?:[ \t].*\n?)*)/m);
+    if (!displayBlockMatch) return null;
+
+    let block = displayBlockMatch[0];
+    block = block.replace(new RegExp(`^[ \\t]*#\\s*${LAMBDA_PLACEHOLDER}\\s*\\n?`, 'm'), '');
+
+    const lvglExtraLines = [];
+    const strippedKeys = [];
+
+    const rotationMatch = block.match(/^[ \t]*rotation:[ \t]*(\S+)[ \t]*\n/m);
+    if (rotationMatch) {
+        lvglExtraLines.push(`  rotation: ${rotationMatch[1]}`);
+        strippedKeys.push('rotation (relocated to lvgl:)');
+        block = block.replace(rotationMatch[0], '');
+    }
+
+    for (const key of LVGL_INCOMPATIBLE_DISPLAY_KEYS) {
+        const keyRe = new RegExp(`^[ \\t]*${key}:.*\\n`, 'm');
+        if (keyRe.test(block)) {
+            strippedKeys.push(key);
+            block = block.replace(keyRe, '');
+        }
+    }
+
+    const recipe = content.slice(0, displayBlockMatch.index) + block + content.slice(displayBlockMatch.index + displayBlockMatch[0].length);
+    return { recipe, lvglExtraLines, strippedKeys };
+}
+
 function schemaValidate(filePath, content) {
     const usesLvgl = /\blvgl\.[a-z_]+\s*:/i.test(content);
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'esphome-designer-verify-'));
     try {
         const recipePath = path.join(tmpDir, 'recipe.yaml');
-        const lambdaBody = usesLvgl
-            ? content // leave as-is; lvgl-conditional profiles are reported, not schema-checked
-            : content.replace(new RegExp(`#\\s*${LAMBDA_PLACEHOLDER}`), 'lambda: |-\n      it.fill(Color(0, 0, 0));');
-        fs.writeFileSync(recipePath, lambdaBody);
+        let lvglBlock = '';
+        let lvglStrippedKeys = null;
 
         if (usesLvgl) {
-            return { status: 'lvgl-conditional', detail: 'profile references lvgl.* actions; needs a manual esphome config pass using the real Designer-generated YAML (lambda + lvgl cannot both be validated generically)' };
+            const displayId = findDisplayId(content);
+            const stub = displayId ? buildLvglStubRecipe(content) : null;
+            if (!displayId || !stub) {
+                fs.writeFileSync(recipePath, content);
+                return { status: 'lvgl-conditional', detail: `could not locate a display id/block to build an lvgl: stub; needs a manual esphome config pass using the real Designer-generated YAML` };
+            }
+            fs.writeFileSync(recipePath, stub.recipe);
+            lvglStrippedKeys = stub.strippedKeys;
+            lvglBlock = `\nlvgl:\n  displays:\n    - ${displayId}\n${stub.lvglExtraLines.join('\n')}\n`;
+        } else {
+            const lambdaBody = content.replace(new RegExp(`#\\s*${LAMBDA_PLACEHOLDER}`), 'lambda: |-\n      it.fill(Color(0, 0, 0));');
+            fs.writeFileSync(recipePath, lambdaBody);
         }
 
         const harnessPath = path.join(tmpDir, 'harness.yaml');
@@ -192,7 +257,7 @@ api:
 
 ota:
   - platform: esphome
-${COMPANION_GLOBALS_AND_SCRIPT}
+${COMPANION_GLOBALS_AND_SCRIPT}${lvglBlock}
 packages:
   hardware_profile: !include recipe.yaml
 `;
@@ -200,21 +265,36 @@ packages:
 
         const result = spawnSync('esphome', ['config', harnessPath], { cwd: tmpDir, encoding: 'utf8' });
         const ok = result.status === 0;
-        return {
-            status: ok ? 'pass' : 'fail',
-            detail: ok ? null : (result.stdout || result.stderr || '').split('\n').filter(Boolean).slice(0, 20).join('\n')
-        };
+        const detail = ok ? null : (result.stdout || result.stderr || '').split('\n').filter(Boolean).slice(0, 20).join('\n');
+
+        if (usesLvgl) {
+            return { status: ok ? 'pass-lvgl-stub' : 'fail-lvgl-stub', strippedKeys: lvglStrippedKeys, detail };
+        }
+        return { status: ok ? 'pass' : 'fail', detail };
     } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
     }
 }
 
+function resolveProfileArg(p) {
+    const direct = path.resolve(process.cwd(), p);
+    if (fs.existsSync(direct)) return direct;
+    // Only treat as a bare basename (fall back to HARDWARE_DIR) if it has
+    // no path separators - a full relative path (as `git diff --name-only`
+    // produces) that doesn't exist should fail loudly with its real path,
+    // not get silently double-joined onto HARDWARE_DIR.
+    if (!p.includes('/') && !p.includes(path.sep)) {
+        return path.join(HARDWARE_DIR, p);
+    }
+    return direct;
+}
+
 function main() {
     const args = process.argv.slice(2);
     const wantSchema = args.includes('--schema');
-    const only = args.find((a) => !a.startsWith('--'));
+    const positional = args.filter((a) => !a.startsWith('--'));
 
-    const profiles = only ? [path.join(HARDWARE_DIR, only)] : listProfiles();
+    const profiles = positional.length ? positional.map(resolveProfileArg) : listProfiles();
     const skipSchema = wantSchema && !esphomeAvailable();
     if (wantSchema && skipSchema) {
         console.warn('esphome CLI not found on PATH; skipping Tier 2 schema validation (install with `pip install esphome`).');
@@ -222,6 +302,7 @@ function main() {
 
     let hadIssues = false;
     let lvglConditionalCount = 0;
+    let lvglStubCount = 0;
 
     for (const filePath of profiles) {
         const name = path.basename(filePath);
@@ -233,11 +314,14 @@ function main() {
             schemaResult = schemaValidate(filePath, content);
         }
 
-        const failed = issues.length > 0 || (schemaResult && schemaResult.status === 'fail');
+        const schemaFailed = schemaResult && (schemaResult.status === 'fail' || schemaResult.status === 'fail-lvgl-stub');
+        const failed = issues.length > 0 || schemaFailed;
         if (failed) hadIssues = true;
         if (schemaResult && schemaResult.status === 'lvgl-conditional') lvglConditionalCount += 1;
+        if (schemaResult && (schemaResult.status === 'pass-lvgl-stub' || schemaResult.status === 'fail-lvgl-stub')) lvglStubCount += 1;
 
-        const marker = failed ? 'FAIL' : issues.length === 0 && warnings.length === 0 && (!schemaResult || schemaResult.status === 'pass') ? 'OK  ' : 'WARN';
+        const schemaOk = !schemaResult || schemaResult.status === 'pass' || schemaResult.status === 'pass-lvgl-stub';
+        const marker = failed ? 'FAIL' : issues.length === 0 && warnings.length === 0 && schemaOk && (!schemaResult || schemaResult.status === 'pass') ? 'OK  ' : 'WARN';
         console.log(`[${marker}] ${rel(filePath)}`);
         issues.forEach((m) => console.log(`         issue:   ${m}`));
         warnings.forEach((m) => console.log(`         warning: ${m}`));
@@ -246,6 +330,16 @@ function main() {
                 console.log('         schema:  esphome config OK');
             } else if (schemaResult.status === 'lvgl-conditional') {
                 console.log(`         schema:  SKIPPED (lvgl-conditional) - ${schemaResult.detail}`);
+            } else if (schemaResult.status === 'pass-lvgl-stub' || schemaResult.status === 'fail-lvgl-stub') {
+                const strippedNote = schemaResult.strippedKeys && schemaResult.strippedKeys.length
+                    ? ` (stripped for LVGL: ${schemaResult.strippedKeys.join(', ')})`
+                    : '';
+                if (schemaResult.status === 'pass-lvgl-stub') {
+                    console.log(`         schema:  esphome config OK - LVGL best-effort stub, not the real Designer output${strippedNote}`);
+                } else {
+                    console.log(`         schema:  esphome config FAILED (LVGL best-effort stub${strippedNote}):`);
+                    schemaResult.detail.split('\n').forEach((l) => console.log(`                  ${l}`));
+                }
             } else {
                 console.log('         schema:  esphome config FAILED:');
                 schemaResult.detail.split('\n').forEach((l) => console.log(`                  ${l}`));
@@ -255,8 +349,11 @@ function main() {
 
     console.log('');
     console.log(`Checked ${profiles.length} profile(s) in ${rel(HARDWARE_DIR)}.`);
+    if (lvglStubCount > 0) {
+        console.log(`${lvglStubCount} profile(s) were schema-validated via a best-effort LVGL stub (no real pages/widgets) - see docs/HARDWARE_PROFILE_VERIFICATION.md.`);
+    }
     if (lvglConditionalCount > 0) {
-        console.log(`${lvglConditionalCount} profile(s) are lvgl-conditional and were not schema-validated automatically - see docs/HARDWARE_PROFILE_VERIFICATION.md.`);
+        console.log(`${lvglConditionalCount} profile(s) could not be stubbed at all (no display id found) and were skipped - see docs/HARDWARE_PROFILE_VERIFICATION.md.`);
     }
 
     if (hadIssues) {
